@@ -1,0 +1,349 @@
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+
+    steps:
+
+      # ======================================================
+      # 1. Checkout
+      # ======================================================
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+
+      # ======================================================
+      # 2. Python 3.14
+      # ======================================================
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+
+      # ======================================================
+      # 3. Android / Linux 编译依赖
+      # ======================================================
+
+      - name: Install system dependencies
+        run: |
+
+          sudo rm -f /etc/apt/sources.list.d/*google* 2>/dev/null || true
+          sudo rm -f /etc/apt/sources.list.d/*chrome* 2>/dev/null || true
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            git \
+            zip \
+            unzip \
+            openjdk-17-jdk \
+            python3-pip \
+            autoconf \
+            automake \
+            libtool \
+            libtool-bin \
+            libltdl-dev \
+            pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libc6-dev \
+            cmake \
+            libffi-dev \
+            libssl-dev \
+            texinfo
+
+
+      # ======================================================
+      # 4. 安装 Buildozer / Cython
+      # ======================================================
+
+      - name: Install buildozer & Cython
+        run: |
+
+          python3 -m pip install --upgrade pip
+
+          python3 -m pip install \
+            buildozer==1.6.0 \
+            "Cython==0.29.34"
+
+          CYTHON_PATH="$(python3 -c 'import sys,os; print(os.path.join(os.path.dirname(sys.executable),"cython"))')"
+
+          echo "Cython path:"
+          echo "$CYTHON_PATH"
+
+          if [ -f "$CYTHON_PATH" ]; then
+            sudo ln -sf "$CYTHON_PATH" /usr/local/bin/cython
+          fi
+
+          echo ""
+          echo "Buildozer:"
+          buildozer --version
+
+          echo ""
+          echo "Cython:"
+          cython --version
+
+
+      # ======================================================
+      # 5. Android SDK
+      # ======================================================
+
+      - name: Prepare Android SDK
+        run: |
+
+          SYS=/usr/local/lib/android/sdk
+
+          echo "System Android SDK:"
+          echo "$SYS"
+
+          if [ -d "$SYS/cmdline-tools" ] && [ -w "$SYS/cmdline-tools" ]; then
+
+            SDK="$SYS"
+
+          else
+
+            SDK="$HOME/android-sdk"
+
+            rm -rf "$SDK"
+
+            mkdir -p "$SDK"
+
+            if [ -d "$SYS" ]; then
+              cp -r "$SYS/." "$SDK/"
+            fi
+
+          fi
+
+          echo ""
+          echo "Using Android SDK:"
+          echo "$SDK"
+
+          echo "ANDROIDSDK=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+
+          SM=$(find "$SDK/cmdline-tools" \
+            -name sdkmanager \
+            -type f \
+            | head -n1)
+
+          echo ""
+          echo "sdkmanager:"
+          echo "$SM"
+
+          if [ -z "$SM" ]; then
+
+            echo "ERROR: sdkmanager not found"
+
+            exit 1
+
+          fi
+
+
+          # 接受 Android SDK License
+
+          yes | "$SM" \
+            --licenses \
+            --sdk_root="$SDK" || true
+
+
+          # 安装需要的 Android SDK
+
+          "$SM" \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;34.0.0" \
+            --sdk_root="$SDK"
+
+
+          # 写入 license
+
+          mkdir -p "$SDK/licenses"
+
+          printf \
+            '24333f8a63b6825ea9c5514f83c2829b004f7c82\n' \
+            > "$SDK/licenses/android-sdk-license"
+
+
+          echo ""
+          echo "Android SDK preparation complete."
+
+
+      # ======================================================
+      # 6. 清理 Buildozer
+      # ======================================================
+      #
+      # 非常重要：删除旧的 .buildozer，确保固定的 p4a
+      # 提交和新的构建 venv 生效。
+      #
+
+      - name: Clean Buildozer
+        run: |
+
+          echo "Cleaning old Buildozer data..."
+
+          rm -rf .buildozer
+          rm -rf bin
+
+          echo ""
+          echo "Clean completed."
+
+          echo ""
+          echo "Project directory:"
+          pwd
+
+          echo ""
+          echo "Project files:"
+          ls -la
+
+
+      # ======================================================
+      # 7. 检查 buildozer.spec
+      # ======================================================
+
+      - name: Check Buildozer configuration
+        run: |
+
+          echo "=========================================="
+          echo "buildozer.spec"
+          echo "=========================================="
+
+          cat buildozer.spec
+
+          echo ""
+          echo "=========================================="
+          echo "Check charset-normalizer configuration"
+          echo "=========================================="
+
+          grep -n \
+            -E \
+            "requirements|charset-normalizer|p4a.extra_args|p4a.branch" \
+            buildozer.spec || true
+
+
+      # ======================================================
+      # 8. 编译 APK
+      # ======================================================
+
+      - name: Build APK
+        run: |
+
+          echo "=========================================="
+          echo "START BUILD"
+          echo "=========================================="
+
+          buildozer -v android debug 2>&1 | tee build_log.txt
+
+
+      # ======================================================
+      # 9. 构建失败时输出错误
+      # ======================================================
+
+      - name: Show build error on failure
+        if: failure()
+        run: |
+
+          echo ""
+          echo "=========================================="
+          echo "BUILD FAILED"
+          echo "=========================================="
+
+          echo ""
+          echo "===== LAST 300 LINES ====="
+
+          tail -n 300 build_log.txt || true
+
+
+          echo ""
+          echo "=========================================="
+          echo "FIRST IMPORTANT ERROR"
+          echo "=========================================="
+
+          grep -n \
+            -i \
+            -m1 \
+            -B10 \
+            -A40 \
+            "error\|exception\|failed\|command failed\|resolutionimpossible" \
+            build_log.txt || true
+
+
+          echo ""
+          echo "=========================================="
+          echo "P4A CHECK"
+          echo "=========================================="
+
+          grep -n \
+            -i \
+            "python-for-android\|p4a" \
+            build_log.txt \
+            | tail -n 50 || true
+
+
+      # ======================================================
+      # 10. 查找 APK
+      # ======================================================
+
+      - name: Locate APK
+        if: always()
+        run: |
+
+          echo "=========================================="
+          echo "SEARCHING FOR APK"
+          echo "=========================================="
+
+          find . \
+            -name "*.apk" \
+            -exec ls -lh {} \; \
+            || true
+
+
+      # ======================================================
+      # 11. 上传 APK
+      # ======================================================
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+
+        if: always()
+
+        with:
+
+          name: baccarat-overlay-apk
+
+          path: bin/*.apk
+
+          if-no-files-found: warn
+
+
+      # ======================================================
+      # 12. 上传完整日志
+      # ======================================================
+
+      - name: Upload build logs
+        uses: actions/upload-artifact@v4
+
+        if: always()
+
+        with:
+
+          name: build-logs
+
+          path: build_log.txt
+
+          if-no-files-found: warn

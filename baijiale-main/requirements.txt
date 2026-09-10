@@ -1,0 +1,8 @@
+# 桌面开发依赖（pip install -r requirements.txt）
+kivy>=2.2
+numpy
+opencv-python
+pillow
+mss
+# 注意：安卓打包不装这里的 opencv-python，改用 buildozer.spec 里的 'opencv' recipe
+# jnius 由 python-for-android 在打包时自动提供，无需 pip 安装
